@@ -1,15 +1,37 @@
-import React, { useState, useRef } from 'react';
-import { Send, Paperclip, Image, Smile } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Send, Paperclip, Smile } from 'lucide-react';
 import { uploadAPI } from '../../services/api';
+import { useSocket } from '../../hooks/useSocket';
 
 interface MessageInputProps {
   onSendMessage: (messageData: any) => void;
+  roomId: string;
 }
 
-export const MessageInput: React.FC<MessageInputProps> = ({ onSendMessage }) => {
+export const MessageInput: React.FC<MessageInputProps> = ({ onSendMessage, roomId }) => {
   const [message, setMessage] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { socket } = useSocket();
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setMessage(e.target.value);
+    
+    if (socket && roomId) {
+      socket.emit('typing-start', { room: roomId, username: 'You' });
+      
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      
+      typingTimeoutRef.current = setTimeout(() => {
+        if (socket) {
+          socket.emit('typing-stop', { room: roomId });
+        }
+      }, 1000);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,6 +41,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSendMessage }) => 
         messageType: 'text'
       });
       setMessage('');
+      
+      if (socket && roomId) {
+        socket.emit('typing-stop', { room: roomId });
+      }
     }
   };
 
@@ -81,7 +107,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSendMessage }) => 
           <input
             type="text"
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={handleTyping}
             placeholder={isUploading ? "Uploading..." : "Type a message..."}
             disabled={isUploading}
             className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-2xl text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors disabled:opacity-50"

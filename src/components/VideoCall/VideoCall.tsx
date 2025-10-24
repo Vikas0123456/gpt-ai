@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useWebRTC } from '../../hooks/useWebRTC';
 import { useSocket } from '../../hooks/useSocket';
+import { useAuth } from '../../context/AuthContext';
 import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff, X } from 'lucide-react';
 
 interface User {
@@ -25,19 +26,19 @@ export const VideoCall: React.FC<VideoCallProps> = ({
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const { socket } = useSocket();
+  const { user } = useAuth();
 
   const {
     startCall,
     createOffer,
     createAnswer,
     handleAnswer,
+    addIceCandidate,
     endCall,
     toggleMute,
     toggleVideo,
-    isCallActive,
     isMuted,
-    isVideoOff,
-    localStream
+    isVideoOff
   } = useWebRTC({
     onRemoteStream: (stream) => {
       if (remoteVideoRef.current) {
@@ -48,55 +49,122 @@ export const VideoCall: React.FC<VideoCallProps> = ({
     onCallEnd: () => {
       setCallState('ended');
       setTimeout(onClose, 1000);
+    },
+    onIceCandidate: (candidate) => {
+      if (socket && targetUser) {
+        socket.emit('webrtc-ice-candidate', {
+          roomId: [user?.id, targetUser._id].sort().join('-'),
+          targetUserId: targetUser._id,
+          candidate
+        });
+      }
     }
   });
 
   useEffect(() => {
     if (socket) {
-      socket.on('incoming_call', (data) => {
+      socket.on('incoming-call', (data) => {
+        console.log('Incoming call:', data);
         setIncomingCall(true);
       });
 
-      socket.on('call_answered', (data) => {
-        handleAnswer(data.signal);
+      socket.on('webrtc-offer', async (data) => {
+        console.log('Received WebRTC offer:', data);
+        try {
+          // Create peer connection for incoming call
+          const stream = await startCall(callType === 'video');
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
+          
+          const answer = await createAnswer(data.offer);
+          if (answer && socket) {
+            socket.emit('webrtc-answer', {
+              roomId: [user?.id, targetUser._id].sort().join('-'),
+              targetUserId: data.fromUserId,
+              answer
+            });
+          }
+        } catch (error) {
+          console.error('Error handling offer:', error);
+        }
       });
 
-      socket.on('call_rejected', () => {
+      socket.on('webrtc-answer', async (data) => {
+        console.log('Received WebRTC answer:', data);
+        await handleAnswer(data.answer);
+      });
+
+      socket.on('webrtc-ice-candidate', async (data) => {
+        console.log('Received ICE candidate:', data);
+        await addIceCandidate(data.candidate);
+      });
+
+      socket.on('call-rejected', () => {
         setCallState('ended');
         setTimeout(onClose, 1000);
       });
 
-      socket.on('call_ended', () => {
+      socket.on('call-ended', () => {
         endCall();
       });
 
       return () => {
-        socket.off('incoming_call');
-        socket.off('call_answered');
-        socket.off('call_rejected');
-        socket.off('call_ended');
+        socket.off('incoming-call');
+        socket.off('webrtc-offer');
+        socket.off('webrtc-answer');
+        socket.off('webrtc-ice-candidate');
+        socket.off('call-rejected');
+        socket.off('call-ended');
       };
     }
-  }, [socket, handleAnswer, endCall]);
+  }, [socket, createAnswer, handleAnswer, addIceCandidate, endCall, user?.id, targetUser._id, callType, startCall]);
 
   useEffect(() => {
     const initializeCall = async () => {
       try {
+        console.log('🚀 Initializing call...', { callType, targetUser: targetUser._id });
+        
+        // Check if we have required permissions
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('Media devices not supported');
+        }
+        
         const stream = await startCall(callType === 'video');
+        console.log('✅ Media stream obtained:', stream);
+        
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
+          console.log('✅ Local video element updated');
         }
 
         const offer = await createOffer();
+        console.log('✅ WebRTC offer created:', offer);
+        
         if (offer && socket) {
-          socket.emit('call_user', {
-            to: targetUser._id,
-            signal: offer,
+          const roomId = [user?.id, targetUser._id].sort().join('-');
+          console.log('📞 Initiating call for room:', roomId);
+          
+          socket.emit('initiate-video-call', {
+            roomId,
             callType
           });
+          
+          // Send the offer after a short delay to ensure the call is set up
+          setTimeout(() => {
+            console.log('📡 Sending WebRTC offer...');
+            socket.emit('webrtc-offer', {
+              roomId,
+              targetUserId: targetUser._id,
+              offer
+            });
+          }, 2000);
+        } else {
+          console.error('❌ Missing offer or socket');
         }
       } catch (error) {
-        console.error('Error starting call:', error);
+        console.error('❌ Error starting call:', error);
+        alert(`Call failed: ${error.message}`);
         onClose();
       }
     };
@@ -108,7 +176,9 @@ export const VideoCall: React.FC<VideoCallProps> = ({
 
   const handleEndCall = () => {
     if (socket) {
-      socket.emit('end_call', { to: targetUser._id });
+      socket.emit('end-video-call', { 
+        roomId: [user?.id, targetUser._id].sort().join('-') 
+      });
     }
     endCall();
     onClose();
@@ -116,12 +186,22 @@ export const VideoCall: React.FC<VideoCallProps> = ({
 
   const handleAcceptCall = async () => {
     try {
+      console.log('Accepting call...');
       const stream = await startCall(callType === 'video');
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
       setIncomingCall(false);
       setCallState('connected');
+      
+      // Join the call
+      if (socket) {
+        const roomId = [user?.id, targetUser._id].sort().join('-');
+        socket.emit('join-video-call', {
+          roomId
+        });
+        console.log('Joined call for room:', roomId);
+      }
     } catch (error) {
       console.error('Error accepting call:', error);
     }
@@ -129,7 +209,9 @@ export const VideoCall: React.FC<VideoCallProps> = ({
 
   const handleRejectCall = () => {
     if (socket) {
-      socket.emit('reject_call', { to: targetUser._id });
+      socket.emit('reject-call', { 
+        roomId: [user?.id, targetUser._id].sort().join('-') 
+      });
     }
     onClose();
   };

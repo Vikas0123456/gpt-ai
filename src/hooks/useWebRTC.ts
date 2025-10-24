@@ -3,9 +3,10 @@ import { useRef, useState, useCallback } from 'react';
 interface WebRTCConfig {
   onRemoteStream: (stream: MediaStream) => void;
   onCallEnd: () => void;
+  onIceCandidate?: (candidate: RTCIceCandidate) => void;
 }
 
-export const useWebRTC = ({ onRemoteStream, onCallEnd }: WebRTCConfig) => {
+export const useWebRTC = ({ onRemoteStream, onCallEnd, onIceCandidate }: WebRTCConfig) => {
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const [isCallActive, setIsCallActive] = useState(false);
@@ -16,23 +17,32 @@ export const useWebRTC = ({ onRemoteStream, onCallEnd }: WebRTCConfig) => {
     const peerConnection = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
       ]
     });
 
     peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        // Send ICE candidate to remote peer via signaling server
+      if (event.candidate && onIceCandidate) {
+        onIceCandidate(event.candidate);
       }
     };
 
     peerConnection.ontrack = (event) => {
+      console.log('Received remote stream');
       onRemoteStream(event.streams[0]);
+    };
+
+    peerConnection.onconnectionstatechange = () => {
+      console.log('Connection state:', peerConnection.connectionState);
+      if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'disconnected') {
+        onCallEnd();
+      }
     };
 
     peerConnectionRef.current = peerConnection;
     return peerConnection;
-  }, [onRemoteStream]);
+  }, [onRemoteStream, onIceCandidate]);
 
   const startCall = useCallback(async (video = false) => {
     try {
@@ -79,6 +89,16 @@ export const useWebRTC = ({ onRemoteStream, onCallEnd }: WebRTCConfig) => {
     }
   }, []);
 
+  const addIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
+    if (peerConnectionRef.current) {
+      try {
+        await peerConnectionRef.current.addIceCandidate(candidate);
+      } catch (error) {
+        console.error('Error adding ICE candidate:', error);
+      }
+    }
+  }, []);
+
   const toggleMute = useCallback(() => {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
@@ -121,6 +141,7 @@ export const useWebRTC = ({ onRemoteStream, onCallEnd }: WebRTCConfig) => {
     createOffer,
     createAnswer,
     handleAnswer,
+    addIceCandidate,
     endCall,
     toggleMute,
     toggleVideo,

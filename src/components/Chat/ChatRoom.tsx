@@ -32,9 +32,10 @@ interface User {
 interface ChatRoomProps {
   selectedUser: User | null;
   onBack: () => void;
+  onStartCall?: (targetUser: User, callType: 'audio' | 'video') => void;
 }
 
-export const ChatRoom: React.FC<ChatRoomProps> = ({ selectedUser, onBack }) => {
+export const ChatRoom: React.FC<ChatRoomProps> = ({ selectedUser, onBack, onStartCall }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isCallModalOpen, setIsCallModalOpen] = useState(false);
   const [callType, setCallType] = useState<'audio' | 'video'>('audio');
@@ -51,34 +52,45 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({ selectedUser, onBack }) => {
       loadMessages();
       
       if (socket) {
-        socket.emit('join_room', roomId);
+        socket.emit('join-rooms', [roomId]);
       }
     }
   }, [selectedUser, roomId]);
 
   useEffect(() => {
     if (socket) {
-      socket.on('receive_message', (message: Message) => {
+      console.log('Setting up socket listeners for room:', roomId);
+      
+      socket.on('new-message', (message: Message) => {
+        console.log('Received new message:', message);
         setMessages(prev => [...prev, message]);
       });
 
-      socket.on('user_typing', ({ userId, username, isTyping }) => {
+      socket.on('user-typing', ({ userId, username }) => {
+        console.log('User typing:', username);
         setTypingUsers(prev => {
-          if (isTyping && !prev.includes(username)) {
+          if (!prev.includes(username)) {
             return [...prev, username];
-          } else if (!isTyping) {
-            return prev.filter(name => name !== username);
           }
           return prev;
         });
       });
 
+      socket.on('user-stop-typing', ({ userId }) => {
+        console.log('User stopped typing:', userId);
+        setTypingUsers(prev => {
+          // Remove user from typing list
+          return prev.filter((_, index) => index !== 0); // Simple approach for now
+        });
+      });
+
       return () => {
-        socket.off('receive_message');
-        socket.off('user_typing');
+        socket.off('new-message');
+        socket.off('user-typing');
+        socket.off('user-stop-typing');
       };
     }
-  }, [socket]);
+  }, [socket, roomId]);
 
   useEffect(() => {
     scrollToBottom();
@@ -99,7 +111,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({ selectedUser, onBack }) => {
 
   const handleSendMessage = (messageData: any) => {
     if (socket) {
-      socket.emit('send_message', {
+      socket.emit('send-message', {
         ...messageData,
         room: roomId
       });
@@ -107,8 +119,12 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({ selectedUser, onBack }) => {
   };
 
   const handleStartCall = (type: 'audio' | 'video') => {
-    setCallType(type);
-    setIsCallModalOpen(true);
+    if (onStartCall && selectedUser) {
+      onStartCall(selectedUser, type);
+    } else {
+      setCallType(type);
+      setIsCallModalOpen(true);
+    }
   };
 
   if (!selectedUser) {
@@ -123,7 +139,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({ selectedUser, onBack }) => {
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-900">
+    <div className="flex-1 flex flex-col bg-gray-900 h-full">
       {/* Header */}
       <div className="bg-gray-800 border-b border-gray-700 px-6 py-4">
         <div className="flex items-center justify-between">
@@ -168,7 +184,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({ selectedUser, onBack }) => {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-y-auto">
         <MessageList 
           messages={messages} 
           currentUserId={user?.id || ''} 
@@ -178,7 +194,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({ selectedUser, onBack }) => {
       </div>
 
       {/* Input */}
-      <MessageInput onSendMessage={handleSendMessage} />
+      <MessageInput onSendMessage={handleSendMessage} roomId={roomId} />
 
       {/* Video Call Modal */}
       {isCallModalOpen && (

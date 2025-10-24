@@ -23,9 +23,12 @@ export const handleSocketConnection = (socket, io) => {
   // Join user to their rooms
   socket.on('join-rooms', async (rooms) => {
     try {
+      console.log(`User ${socket.user.username} joining rooms:`, rooms);
       for (const roomId of rooms) {
         socket.join(roomId);
-        activeUsers.get(socket.userId).rooms.add(roomId);
+        if (activeUsers.has(socket.userId)) {
+          activeUsers.get(socket.userId).rooms.add(roomId);
+        }
         
         if (!activeRooms.has(roomId)) {
           activeRooms.set(roomId, new Set());
@@ -43,6 +46,7 @@ export const handleSocketConnection = (socket, io) => {
   // Handle sending messages
   socket.on('send-message', async (messageData) => {
     try {
+      console.log('Received message:', messageData);
       const message = new Message({
         sender: socket.userId,
         content: messageData.content,
@@ -61,6 +65,7 @@ export const handleSocketConnection = (socket, io) => {
         await message.populate('replyTo');
       }
 
+      console.log('Broadcasting message to room:', messageData.room);
       // Broadcast message to room
       io.to(messageData.room).emit('new-message', message);
     } catch (error) {
@@ -140,13 +145,22 @@ export const handleSocketConnection = (socket, io) => {
       // Join call room
       socket.join(`call-${roomId}`);
 
-      // Notify room about incoming call
-      socket.to(roomId).emit('incoming-call', {
-        callId: videoCall._id,
-        roomId,
-        initiator: videoCall.initiator,
-        callType
-      });
+      // Find the target user and notify them directly
+      const targetUserId = roomId.split('-').find(id => id !== socket.userId);
+      const targetUserData = Array.from(activeUsers.values()).find(user => user.user._id === targetUserId);
+      
+      if (targetUserData) {
+        console.log('Sending incoming call to user:', targetUserId);
+        io.to(targetUserData.socketId).emit('incoming-call', {
+          callId: videoCall._id,
+          roomId,
+          initiator: videoCall.initiator,
+          callType,
+          ringing: true
+        });
+      } else {
+        console.log('Target user not found for call:', targetUserId);
+      }
 
       socket.emit('call-initiated', { callId: videoCall._id, roomId });
     } catch (error) {
@@ -156,8 +170,9 @@ export const handleSocketConnection = (socket, io) => {
   });
 
   // Handle joining video call
-  socket.on('join-video-call', async ({ callId, roomId }) => {
+  socket.on('join-video-call', async ({ roomId }) => {
     try {
+      console.log('User joining video call for room:', roomId);
       const activeCall = videoCalls.get(roomId);
       if (!activeCall) {
         socket.emit('call-error', { message: 'Call not found' });
@@ -169,7 +184,7 @@ export const handleSocketConnection = (socket, io) => {
       socket.join(`call-${roomId}`);
 
       // Update database
-      await VideoCall.findByIdAndUpdate(callId, {
+      await VideoCall.findByIdAndUpdate(activeCall.callId, {
         $push: {
           participants: {
             user: socket.userId
@@ -190,13 +205,15 @@ export const handleSocketConnection = (socket, io) => {
         .select('username avatar');
 
       socket.emit('call-joined', {
-        callId,
+        callId: activeCall.callId,
         participants: participants.map(p => ({
           userId: p._id,
           username: p.username,
           avatar: p.avatar
         }))
       });
+      
+      console.log('User successfully joined call');
     } catch (error) {
       console.error('Error joining video call:', error);
       socket.emit('call-error', { message: 'Failed to join call' });
@@ -205,36 +222,78 @@ export const handleSocketConnection = (socket, io) => {
 
   // Handle WebRTC signaling
   socket.on('webrtc-offer', ({ roomId, targetUserId, offer }) => {
+    console.log('Received WebRTC offer:', { roomId, targetUserId });
     const activeCall = videoCalls.get(roomId);
-    if (!activeCall || !activeCall.participants.has(targetUserId)) return;
+    if (!activeCall) {
+      console.log('No active call found for room:', roomId);
+      return;
+    }
 
-    const targetSocketId = activeCall.participants.get(targetUserId);
-    io.to(targetSocketId).emit('webrtc-offer', {
-      fromUserId: socket.userId,
-      offer
-    });
+    // Find target user socket
+    const targetUserData = Array.from(activeUsers.values()).find(user => user.user._id === targetUserId);
+    if (targetUserData) {
+      io.to(targetUserData.socketId).emit('webrtc-offer', {
+        fromUserId: socket.userId,
+        offer
+      });
+    } else {
+      console.log('Target user not found:', targetUserId);
+    }
   });
 
   socket.on('webrtc-answer', ({ roomId, targetUserId, answer }) => {
+    console.log('Received WebRTC answer:', { roomId, targetUserId });
     const activeCall = videoCalls.get(roomId);
-    if (!activeCall || !activeCall.participants.has(targetUserId)) return;
+    if (!activeCall) {
+      console.log('No active call found for room:', roomId);
+      return;
+    }
 
-    const targetSocketId = activeCall.participants.get(targetUserId);
-    io.to(targetSocketId).emit('webrtc-answer', {
-      fromUserId: socket.userId,
-      answer
-    });
+    // Find target user socket
+    const targetUserData = Array.from(activeUsers.values()).find(user => user.user._id === targetUserId);
+    if (targetUserData) {
+      io.to(targetUserData.socketId).emit('webrtc-answer', {
+        fromUserId: socket.userId,
+        answer
+      });
+    } else {
+      console.log('Target user not found:', targetUserId);
+    }
   });
 
   socket.on('webrtc-ice-candidate', ({ roomId, targetUserId, candidate }) => {
+    console.log('Received ICE candidate:', { roomId, targetUserId });
     const activeCall = videoCalls.get(roomId);
-    if (!activeCall || !activeCall.participants.has(targetUserId)) return;
+    if (!activeCall) {
+      console.log('No active call found for room:', roomId);
+      return;
+    }
 
-    const targetSocketId = activeCall.participants.get(targetUserId);
-    io.to(targetSocketId).emit('webrtc-ice-candidate', {
-      fromUserId: socket.userId,
-      candidate
-    });
+    // Find target user socket
+    const targetUserData = Array.from(activeUsers.values()).find(user => user.user._id === targetUserId);
+    if (targetUserData) {
+      io.to(targetUserData.socketId).emit('webrtc-ice-candidate', {
+        fromUserId: socket.userId,
+        candidate
+      });
+    } else {
+      console.log('Target user not found:', targetUserId);
+    }
+  });
+
+  // Handle call rejection
+  socket.on('reject-call', ({ roomId }) => {
+    const activeCall = videoCalls.get(roomId);
+    if (activeCall) {
+      // Notify initiator that call was rejected
+      socket.to(`call-${roomId}`).emit('call-rejected', {
+        roomId,
+        rejectedBy: socket.userId
+      });
+      
+      // Clean up the call
+      videoCalls.delete(roomId);
+    }
   });
 
   // Handle leaving video call
